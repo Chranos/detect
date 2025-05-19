@@ -6,6 +6,7 @@ def measure_circularity(image_path):
     """
     使用Otsu阈值法测量图片中白色物体（假定为球体）的圆度，
     并在白球内部使用Otsu方法找到较黑的区域作为气泡
+    同时检测白球是否发生桥接(外接圆超出图像边界)
     
     参数:
     image_path: 图像路径
@@ -14,6 +15,9 @@ def measure_circularity(image_path):
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"无法加载图像: {image_path}")
+    
+    # 获取图像尺寸
+    image_height, image_width = image.shape[:2]
     
     # 转换为灰度图像
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -34,7 +38,7 @@ def measure_circularity(image_path):
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     
     if not contours:
-        return 0, image.copy(), (0, 0), 0, 0, 0, None, None, None
+        return 0, image.copy(), (0, 0), 0, 0, 0, None, None, None, False
     
     # 找到最大轮廓（假设白球是最大的对象）
     largest_contour = max(contours, key=cv2.contourArea)
@@ -56,6 +60,18 @@ def measure_circularity(image_path):
     (center_x, center_y), radius = cv2.minEnclosingCircle(largest_contour)
     center = (int(center_x), int(center_y))
     radius = int(radius)
+    
+    # 判断是否桥接 - 检查外接圆是否超出图像边界
+    is_bridging = False
+    
+    # 计算外接圆是否超出图像边界
+    left_edge = center_x - radius
+    right_edge = center_x + radius
+    top_edge = center_y - radius
+    bottom_edge = center_y + radius
+    
+    if left_edge < 0 or right_edge >= image_width or top_edge < 0 or bottom_edge >= image_height:
+        is_bridging = True
     
     # ===== 在白球内部使用Otsu方法找到较黑的区域作为气泡 =====
     
@@ -165,18 +181,23 @@ def measure_circularity(image_path):
     cv2.putText(result_image, f"bubble_number: {len(bubble_data)}", 
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
     
-    return circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data
+    # 添加桥接信息
+    bridging_text = "yes" if is_bridging else "no"
+    cv2.putText(result_image, f"bridging: {bridging_text}", 
+                (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+    
+    return circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging
 
 def main():
     """主函数"""
     print("开始使用Otsu方法自动测量白球的圆度和检测气泡...")
     
     # 加载图像
-    image_path = "tt2.jpg"  # 假设白球图像名为tt2.jpg
+    image_path = "tt5.jpg"  # 假设白球图像名为tt2.jpg
     
     try:
         # 使用Otsu方法进行测量
-        circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data = measure_circularity(image_path)
+        circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging = measure_circularity(image_path)
         
         print(f"\n自动分析结果:")
         print(f"白球圆度: {circularity:.4f}")
