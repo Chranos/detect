@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import json
+from shapely.geometry import Polygon
 
 def calculate_gray_ratio(image, contour, center, inner_ratio=0.75):
     """
@@ -49,20 +51,66 @@ def calculate_gray_ratio(image, contour, center, inner_ratio=0.75):
     
     return inner_gray, outer_gray, gray_ratio
 
-def measure_circularity(image_path, layer_type='middle'):
+def extract_roi(image, points):
+    """
+    从图像中提取指定四边形区域
+    
+    参数:
+    image: 原始图像
+    points: 四边形的四个顶点坐标 [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+    
+    返回:
+    roi_image: 提取的区域图像（矩形）
+    """
+    # 将点列表转换为numpy数组
+    points = np.array(points, dtype=np.float32)
+    
+    # 计算ROI的宽度和高度
+    # 使用Polygon计算外接矩形
+    poly = Polygon(points)
+    min_x, min_y, max_x, max_y = poly.bounds
+    width = int(max_x - min_x)
+    height = int(max_y - min_y)
+    
+    # 定义目标点（矩形）
+    dst_points = np.array([
+        [0, 0],
+        [width, 0],
+        [width, height],
+        [0, height]
+    ], dtype=np.float32)
+    
+    # 计算透视变换矩阵
+    M = cv2.getPerspectiveTransform(points, dst_points)
+    
+    # 进行透视变换
+    roi_image = cv2.warpPerspective(image, M, (width, height))
+    
+    return roi_image
+
+def measure_circularity(image_path, layer_type='middle', roi_points=None):
     """
     使用Otsu阈值法测量图片中白色物体（假定为球体）的圆度，
     并在白球内部使用Otsu方法找到较黑的区域作为气泡
     同时检测白球是否发生桥接(外接圆超出图像边界)
     
     参数:
-    image_path: 图像路径
+    image_path: 图像路径或直接传入图像
     layer_type: 层级类型，可选 'upper'(上层), 'middle'(中层), 'under'(下层)
+    roi_points: 可选，检测区域的四个角点坐标
     """
     # 读取图像
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"无法加载图像: {image_path}")
+    if isinstance(image_path, str):
+        image = cv2.imread(image_path)
+        if image is None:
+            raise FileNotFoundError(f"无法加载图像: {image_path}")
+    else:
+        # 假设image_path是已加载的图像
+        image = image_path.copy()
+    
+    # 如果提供了ROI点，截取指定区域
+    if roi_points is not None:
+        image = extract_roi(image, roi_points)
     
     # 获取图像尺寸
     image_height, image_width = image.shape[:2]
@@ -264,16 +312,187 @@ def measure_circularity(image_path, layer_type='middle'):
     else:
         return circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging
 
+def process_image_with_rois(image_path, rois, layer_type='middle'):
+    """
+    处理图像中的多个ROI区域
+    
+    参数:
+    image_path: 图像路径
+    rois: ROI区域列表，每个元素是四个点的坐标
+    layer_type: 层级类型
+    """
+    # 读取原始图像
+    original_image = cv2.imread(image_path)
+    if original_image is None:
+        raise FileNotFoundError(f"无法加载图像: {image_path}")
+        
+    # 在原图上标记ROI区域
+    marked_image = original_image.copy()
+    
+    results = []
+    
+    # 处理每个ROI
+    for i, roi_points in enumerate(rois):
+        print(f"\n处理ROI #{i+1}:")
+        
+        # 在原图上绘制ROI区域
+        points_array = np.array(roi_points, dtype=np.int32)
+        cv2.polylines(marked_image, [points_array], True, (0, 255, 255), 2)
+        cv2.putText(marked_image, f"ROI #{i+1}", 
+                   (int(points_array[0][0]), int(points_array[0][1]) - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        
+        # 分析当前ROI
+        try:
+            if layer_type == 'under':
+                circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging, inner_gray, outer_gray, gray_ratio = measure_circularity(original_image, layer_type, roi_points)
+                result = {
+                    'roi_id': i+1,
+                    'circularity': circularity,
+                    'radius': radius,
+                    'area': area,
+                    'bubble_count': len(bubble_data),
+                    'is_bridging': bool(is_bridging),
+                    'inner_gray': float(inner_gray),
+                    'outer_gray': float(outer_gray),
+                    'gray_ratio': float(gray_ratio)
+                }
+            else:
+                circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging = measure_circularity(original_image, layer_type, roi_points)
+                result = {
+                    'roi_id': i+1,
+                    'circularity': circularity,
+                    'radius': radius,
+                    'area': area,
+                    'bubble_count': len(bubble_data),
+                    'is_bridging': bool(is_bridging)
+                }
+            
+            # 保存处理后的ROI图像
+            roi_name = f"roi_{i+1}_{layer_type}"
+            cv2.imwrite(f"{roi_name}_result.png", result_image)
+            
+            # 添加结果到列表
+            results.append(result)
+            
+            print(f"ROI #{i+1} 分析结果:")
+            print(f"  圆度: {circularity:.4f}")
+            print(f"  半径: {radius}像素")
+            print(f"  面积: {area:.2f}平方像素")
+            print(f"  气泡数量: {len(bubble_data)}")
+            print(f"  是否桥接: {'是' if is_bridging else '否'}")
+            
+            if layer_type == 'under':
+                print(f"  内圆平均灰度: {inner_gray:.2f}")
+                print(f"  外环平均灰度: {outer_gray:.2f}")
+                print(f"  灰度比(内圆/外环): {gray_ratio:.4f}")
+                
+        except Exception as e:
+            print(f"处理ROI #{i+1}时出错: {str(e)}")
+            results.append({'roi_id': i+1, 'error': str(e)})
+    
+    # 保存标记了ROI的原始图像
+    cv2.imwrite("marked_rois.png", marked_image)
+    
+    # 保存JSON结果
+    with open(f"analysis_results_{layer_type}.json", 'w') as f:
+        json.dump(results, f, indent=2)
+        
+    return marked_image, results
+
 def main():
     """主函数"""
     # 创建命令行参数解析器
     parser = argparse.ArgumentParser(description='白球图像分析工具')
-    parser.add_argument('--image', type=str, default="tt5.jpg", help='要分析的图像路径')
-    parser.add_argument('--layer', type=str, default='under', choices=['upper', 'middle', 'under'], 
+    parser.add_argument('--image', type=str, default="tt6.jpg", help='要分析的图像路径')
+    parser.add_argument('--layer', type=str, default='middle', choices=['upper', 'middle', 'under'], 
                         help='图像层级类型: upper(上层), middle(中层), under(下层)')
+    parser.add_argument('--roi', type=str,default="rois.json", help='ROI区域JSON文件路径，格式为[[x1,y1],[x2,y2],[x3,y3],[x4,y4]]的列表')
+    parser.add_argument('--single_roi', action='store_true', help='是否使用单个ROI模式')
     
     # 解析命令行参数
     args = parser.parse_args()
+    image_path = args.image
+    layer_type = args.layer
+    
+    # 读取ROI文件
+    if args.roi:
+        try:
+            with open(args.roi, 'r') as f:
+                rois = json.load(f)
+                
+            if args.single_roi and len(rois) > 0:
+                # 单一ROI模式
+                print(f"使用单一ROI模式分析图像: {image_path}")
+                if layer_type == 'under':
+                    circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging, inner_gray, outer_gray, gray_ratio = measure_circularity(image_path, layer_type, rois[0])
+                else:
+                    circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging = measure_circularity(image_path, layer_type, rois[0])
+                    
+                # 显示结果
+                plt.figure(figsize=(15, 10))
+                
+                # 显示原始图像
+                plt.subplot(2, 2, 1)
+                original = cv2.imread(image_path)
+                plt.imshow(cv2.cvtColor(original, cv2.COLOR_BGR2RGB))
+                plt.title('原始图像')
+                plt.axis('off')
+                
+                # 显示Otsu阈值处理结果(白球)
+                plt.subplot(2, 2, 2)
+                plt.imshow(thresh, cmap='gray')
+                plt.title('Otsu阈值处理结果(白球)')
+                plt.axis('off')
+                
+                # 显示气泡阈值处理结果
+                plt.subplot(2, 2, 3)
+                plt.imshow(bubble_thresh, cmap='gray')
+                plt.title('Otsu阈值处理结果(气泡)')
+                plt.axis('off')
+                
+                # 显示最终分析结果
+                plt.subplot(2, 2, 4)
+                plt.imshow(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+                title_text = f'检测结果 - 圆度: {circularity:.4f}, 气泡: {len(bubble_data)}'
+                if layer_type == 'under':
+                    title_text += f', 灰度比: {gray_ratio:.4f}'
+                plt.title(title_text)
+                plt.axis('off')
+                
+                plt.tight_layout()
+                plt.savefig(f'roi_analysis_{layer_type}.png', dpi=300)
+                plt.show()
+                
+                # 保存最终结果
+                cv2.imwrite(f'roi_result_{layer_type}.png', result_image)
+                
+                print(f"\nROI分析完成! 结果已保存")
+            else:
+                # 多ROI模式
+                print(f"开始处理图像 {image_path} 中的 {len(rois)} 个ROI区域...")
+                marked_image, results = process_image_with_rois(image_path, rois, layer_type)
+                
+                # 显示标记了ROI的原始图像
+                plt.figure(figsize=(10, 8))
+                plt.imshow(cv2.cvtColor(marked_image, cv2.COLOR_BGR2RGB))
+                plt.title(f'图像中的ROI区域 (共{len(rois)}个)')
+                plt.axis('off')
+                plt.show()
+                
+                print(f"\n所有ROI分析完成! 结果已保存为JSON文件")
+                
+        except Exception as e:
+            print(f"读取ROI文件出错: {str(e)}")
+            print("使用默认模式处理整个图像")
+            # 使用标准处理模式
+            run_standard_mode(args)
+    else:
+        # 没有提供ROI文件，使用标准处理模式
+        run_standard_mode(args)
+
+def run_standard_mode(args):
+    """运行标准处理模式（处理整个图像）"""
     image_path = args.image
     layer_type = args.layer
     
