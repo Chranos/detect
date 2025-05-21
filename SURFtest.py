@@ -255,16 +255,16 @@ def measure_circularity(image_path, layer_type='middle', roi_points=None):
     # 可视化结果
     result_image = image.copy()
     # 绘制白球轮廓
-    cv2.drawContours(result_image, [largest_contour], 0, (0, 255, 0), 2)
+    cv2.drawContours(result_image, [largest_contour], 0, (0, 255, 0), 1)  # 线宽从2改为1
     # 绘制白球的最小外接圆
-    cv2.circle(result_image, center, radius, (0, 0, 255), 2)
+    cv2.circle(result_image, center, radius, (0, 0, 255), 1)  # 线宽从2改为1
     
     # 绘制气泡区域
     for bubble in bubble_data:
         # 绘制气泡轮廓（蓝色）
-        cv2.drawContours(result_image, [bubble['contour']], 0, (255, 0, 0), 2)
+        cv2.drawContours(result_image, [bubble['contour']], 0, (255, 0, 0), 1)  # 线宽从2改为1
         # 绘制气泡的最小外接圆（黄色）
-        cv2.circle(result_image, bubble['center'], bubble['radius'], (0, 255, 255), 2)
+        cv2.circle(result_image, bubble['center'], bubble['radius'], (0, 255, 255), 1)  # 线宽从2改为1
         # 在气泡中心添加编号
         cv2.putText(result_image, f"{bubble['id']}", 
                     bubble['center'], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -304,7 +304,7 @@ def measure_circularity(image_path, layer_type='middle', roi_points=None):
         # 计算内圆半径（面积为总面积的3/4）
         inner_radius = int(eq_radius * np.sqrt(0.75))
         # 绘制内圆边界（青色）
-        cv2.circle(vis_mask, center, inner_radius, (255, 255, 0), 2)
+        cv2.circle(vis_mask, center, inner_radius, (255, 255, 0), 1)  # 线宽从2改为1
         # 将可视化掩码叠加到结果图像上
         result_image = cv2.addWeighted(result_image, 0.7, vis_mask, 0.3, 0)
         
@@ -331,16 +331,20 @@ def process_image_with_rois(image_path, rois, layer_type='middle'):
     
     results = []
     
+    # 用于计算总气泡率
+    total_bubble_area = 0
+    total_ball_area = 0
+    
     # 处理每个ROI
     for i, roi_points in enumerate(rois):
         print(f"\n处理ROI #{i+1}:")
         
         # 在原图上绘制ROI区域
         points_array = np.array(roi_points, dtype=np.int32)
-        cv2.polylines(marked_image, [points_array], True, (0, 255, 255), 2)
+        cv2.polylines(marked_image, [points_array], True, (0, 255, 255), 1)  # 线宽从2改为1
         cv2.putText(marked_image, f"ROI #{i+1}", 
                    (int(points_array[0][0]), int(points_array[0][1]) - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 1)  # 线宽从2改为1
         
         # 分析当前ROI
         try:
@@ -359,12 +363,25 @@ def process_image_with_rois(image_path, rois, layer_type='middle'):
                 }
             else:
                 circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging = measure_circularity(original_image, layer_type, roi_points)
+                
+                # 计算当前ROI中的气泡总面积
+                roi_bubble_area = sum(bubble['area'] for bubble in bubble_data)
+                
+                # 累计总面积
+                total_bubble_area += roi_bubble_area
+                total_ball_area += area
+                
+                # 计算单个ROI的气泡率
+                bubble_ratio = roi_bubble_area / area if area > 0 else 0
+                
                 result = {
                     'roi_id': i+1,
                     'circularity': circularity,
                     'radius': radius,
                     'area': area,
                     'bubble_count': len(bubble_data),
+                    'bubble_area': roi_bubble_area,
+                    'bubble_ratio': bubble_ratio,
                     'is_bridging': bool(is_bridging)
                 }
             
@@ -380,6 +397,11 @@ def process_image_with_rois(image_path, rois, layer_type='middle'):
             print(f"  半径: {radius}像素")
             print(f"  面积: {area:.2f}平方像素")
             print(f"  气泡数量: {len(bubble_data)}")
+            
+            if layer_type == 'middle':
+                print(f"  气泡总面积: {roi_bubble_area:.2f}平方像素")
+                print(f"  气泡率: {bubble_ratio:.4f}")
+                
             print(f"  是否桥接: {'是' if is_bridging else '否'}")
             
             if layer_type == 'under':
@@ -390,6 +412,22 @@ def process_image_with_rois(image_path, rois, layer_type='middle'):
         except Exception as e:
             print(f"处理ROI #{i+1}时出错: {str(e)}")
             results.append({'roi_id': i+1, 'error': str(e)})
+    
+    # 计算总气泡率
+    total_bubble_ratio = total_bubble_area / total_ball_area if total_ball_area > 0 else 0
+    
+    # 将总气泡率添加到结果中
+    if layer_type == 'middle':
+        total_result = {
+            'total_bubble_area': total_bubble_area,
+            'total_ball_area': total_ball_area,
+            'total_bubble_ratio': total_bubble_ratio
+        }
+        results.append(total_result)
+        print(f"\n总体分析结果:")
+        print(f"  总气泡面积: {total_bubble_area:.2f}平方像素")
+        print(f"  总白球面积: {total_ball_area:.2f}平方像素")
+        print(f"  总气泡率: {total_bubble_ratio:.4f}")
     
     # 保存标记了ROI的原始图像
     cv2.imwrite("marked_rois.png", marked_image)
@@ -404,92 +442,84 @@ def main():
     """主函数"""
     # 创建命令行参数解析器
     parser = argparse.ArgumentParser(description='白球图像分析工具')
-    parser.add_argument('--image', type=str, default="tt6.jpg", help='要分析的图像路径')
-    parser.add_argument('--layer', type=str, default='middle', choices=['upper', 'middle', 'under'], 
-                        help='图像层级类型: upper(上层), middle(中层), under(下层)')
-    parser.add_argument('--roi', type=str,default="rois.json", help='ROI区域JSON文件路径，格式为[[x1,y1],[x2,y2],[x3,y3],[x4,y4]]的列表')
+    parser.add_argument('--roi', type=str, default="rois.json", help='ROI区域JSON文件路径，格式为[[x1,y1],[x2,y2],[x3,y3],[x4,y4]]的列表')
     parser.add_argument('--single_roi', action='store_true', help='是否使用单个ROI模式')
     
     # 解析命令行参数
     args = parser.parse_args()
-    image_path = args.image
-    layer_type = args.layer
+    
+    # 固定图像路径
+    middle_image_path = "best_slice.png"  # 中层
+    upper_image_path = "upper_slice.png"  # 上层
+    lower_image_path = "lower_slice.png"  # 下层
     
     # 读取ROI文件
     if args.roi:
         try:
             with open(args.roi, 'r') as f:
                 rois = json.load(f)
-                
-            if args.single_roi and len(rois) > 0:
-                # 单一ROI模式
-                print(f"使用单一ROI模式分析图像: {image_path}")
-                if layer_type == 'under':
-                    circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging, inner_gray, outer_gray, gray_ratio = measure_circularity(image_path, layer_type, rois[0])
-                else:
-                    circularity, result_image, center, radius, area, perimeter, thresh, bubble_thresh, bubble_data, is_bridging = measure_circularity(image_path, layer_type, rois[0])
-                    
-                # 显示结果
-                plt.figure(figsize=(15, 10))
-                
-                # 显示原始图像
-                plt.subplot(2, 2, 1)
-                original = cv2.imread(image_path)
-                plt.imshow(cv2.cvtColor(original, cv2.COLOR_BGR2RGB))
-                plt.title('原始图像')
-                plt.axis('off')
-                
-                # 显示Otsu阈值处理结果(白球)
-                plt.subplot(2, 2, 2)
-                plt.imshow(thresh, cmap='gray')
-                plt.title('Otsu阈值处理结果(白球)')
-                plt.axis('off')
-                
-                # 显示气泡阈值处理结果
-                plt.subplot(2, 2, 3)
-                plt.imshow(bubble_thresh, cmap='gray')
-                plt.title('Otsu阈值处理结果(气泡)')
-                plt.axis('off')
-                
-                # 显示最终分析结果
-                plt.subplot(2, 2, 4)
-                plt.imshow(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
-                title_text = f'检测结果 - 圆度: {circularity:.4f}, 气泡: {len(bubble_data)}'
-                if layer_type == 'under':
-                    title_text += f', 灰度比: {gray_ratio:.4f}'
-                plt.title(title_text)
-                plt.axis('off')
-                
-                plt.tight_layout()
-                plt.savefig(f'roi_analysis_{layer_type}.png', dpi=300)
-                plt.show()
-                
-                # 保存最终结果
-                cv2.imwrite(f'roi_result_{layer_type}.png', result_image)
-                
-                print(f"\nROI分析完成! 结果已保存")
-            else:
-                # 多ROI模式
-                print(f"开始处理图像 {image_path} 中的 {len(rois)} 个ROI区域...")
-                marked_image, results = process_image_with_rois(image_path, rois, layer_type)
-                
-                # 显示标记了ROI的原始图像
-                plt.figure(figsize=(10, 8))
-                plt.imshow(cv2.cvtColor(marked_image, cv2.COLOR_BGR2RGB))
-                plt.title(f'图像中的ROI区域 (共{len(rois)}个)')
-                plt.axis('off')
-                plt.show()
-                
-                print(f"\n所有ROI分析完成! 结果已保存为JSON文件")
-                
+            
+            print("开始处理三层图像...")
+            
+            # 储存各层的分析结果
+            layer_results = {}
+            
+            # 处理中层图像
+            print(f"\n处理中层图像 {middle_image_path}...")
+            middle_marked_image, middle_results = process_image_with_rois(middle_image_path, rois, 'middle')
+            layer_results['middle'] = middle_results
+            
+            # 处理上层图像（与中层使用相同的处理方法）
+            print(f"\n处理上层图像 {upper_image_path}...")
+            upper_marked_image, upper_results = process_image_with_rois(upper_image_path, rois, 'upper')  # 注意这里用'middle'而非'upper'
+            layer_results['upper'] = upper_results
+            
+            # 处理下层图像（使用特定的下层处理方法）
+            print(f"\n处理下层图像 {lower_image_path}...")
+            lower_marked_image, lower_results = process_image_with_rois(lower_image_path, rois, 'under')
+            layer_results['lower'] = lower_results
+            
+            # 计算中层与下层白球面积的比例
+            # 找出每层的总白球面积
+            middle_ball_area = 0
+            lower_ball_area = 0
+            
+            # 获取中层数据
+            for result in middle_results:
+                if 'area' in result and 'roi_id' in result:  # 确保是ROI结果
+                    middle_ball_area += result['area']
+            
+            # 获取下层数据
+            for result in lower_results:
+                if 'area' in result and 'roi_id' in result:  # 确保是ROI结果
+                    lower_ball_area += result['area']
+            
+            # 计算面积比
+            area_ratio = middle_ball_area / lower_ball_area if lower_ball_area > 0 else 0
+            
+            print("\n========== 层间分析结果 ==========")
+            print(f"中层白球总面积: {middle_ball_area:.2f}平方像素")
+            print(f"下层白球总面积: {lower_ball_area:.2f}平方像素")
+            print(f"中层/下层面积比: {area_ratio:.4f}")
+            
+            # 保存面积比结果到JSON文件
+            ratio_results = {
+                'middle_ball_area': middle_ball_area,
+                'lower_ball_area': lower_ball_area,
+                'area_ratio': area_ratio
+            }
+            
+            with open("layer_area_ratio.json", 'w') as f:
+                json.dump(ratio_results, f, indent=2)
+            
+            print(f"\n所有图层分析完成! 结果已保存为JSON文件")
+            
         except Exception as e:
-            print(f"读取ROI文件出错: {str(e)}")
-            print("使用默认模式处理整个图像")
-            # 使用标准处理模式
-            run_standard_mode(args)
+            print(f"处理过程中出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
     else:
-        # 没有提供ROI文件，使用标准处理模式
-        run_standard_mode(args)
+        print("请提供ROI文件路径")
 
 def run_standard_mode(args):
     """运行标准处理模式（处理整个图像）"""
